@@ -87,6 +87,10 @@ Provides two visualization modes: D3.js (default) and matplotlib (legacy).
 - `get_d3_html_template()` - Returns complete HTML with embedded D3.js
 - `draw_graph()` - Saves HTML and opens in browser
 
+**CSV Export:**
+- `export_to_csv()` - Summary export: one row per node with connection counts
+- `export_to_csv_detail()` - Detailed export: one row per dependency edge with source/target file, module, entity, and type labels. Reads directly from the `usage_graph` dict and resolves cross-module references to full file paths.
+
 **D3.js Features:**
 - Force-directed layout for automatic node positioning
 - Zoom/pan with mouse wheel and drag
@@ -119,6 +123,8 @@ Click-based command-line interface.
 
 **Options:**
 - `paths` - Directory or file paths to analyze
+- `--csv PATH` - Export summary CSV (one row per node with connection counts)
+- `--csv-detail PATH` - Export detailed CSV (one row per dependency edge)
 - `--matplotlib` - Use legacy matplotlib visualization
 - `--output` - Custom output path for HTML file
 

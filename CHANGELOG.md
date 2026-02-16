@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+**Detailed CSV Export**
+- New `--csv-detail PATH` option to export every dependency edge as a CSV row
+- Each row contains: `source_file`, `source_module`, `source_entity`, `source_type`, `target_file`, `target_module`, `target_entity`, `target_type`
+- Cross-module references are resolved to full file paths and entity types
+- Example: `codegraph /path/to/code --csv-detail output.csv`
+- Complements the existing `--csv` summary export (which shows node-level connection counts)
+
 ## [1.2.0] - 2026-01-18
 
 ### Added

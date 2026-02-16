@@ -343,6 +343,116 @@ def draw_graph(modules_entities: Dict, entity_metadata: Dict = None, output_path
     click.echo(f"Interactive graph saved and opened in browser: {output_path}")
 
 
+def export_to_csv_detail(modules_entities: Dict, entity_metadata: Dict = None, output_path: str = None) -> None:
+    """Export detailed edge-level graph data to CSV file.
+
+    One row per dependency edge: source entity → target entity, with file/module/type labels.
+
+    Args:
+        modules_entities: Graph data with modules and their entities.
+        entity_metadata: Metadata for entities (lines of code, type).
+        output_path: Path to save CSV file. Default: ./codegraph_detail.csv
+    """
+    import click
+
+    if entity_metadata is None:
+        entity_metadata = {}
+
+    # Build lookup: module_name (no .py) → full path
+    module_name_to_path: Dict[str, str] = {}
+    for path in modules_entities:
+        mod_name = os.path.basename(path).replace(".py", "")
+        module_name_to_path[mod_name] = path
+
+    # Find common root for relative paths
+    all_paths = list(modules_entities.keys())
+    if all_paths:
+        common_root = os.path.dirname(os.path.commonpath(all_paths))
+    else:
+        common_root = ""
+
+    def relative(p: str) -> str:
+        return os.path.relpath(p, common_root) if common_root else p
+
+    def get_entity_type(path: str, entity_name: str) -> str:
+        meta = entity_metadata.get(path, {}).get(entity_name, {})
+        return meta.get("entity_type", "function")
+
+    # Determine output path
+    if output_path is None:
+        output_path = os.path.join(os.getcwd(), "codegraph_detail.csv")
+    output_path = os.path.abspath(output_path)
+
+    fieldnames = [
+        'source_file', 'source_module', 'source_entity', 'source_type',
+        'target_file', 'target_module', 'target_entity', 'target_type',
+    ]
+
+    with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for module_path, entities in modules_entities.items():
+            source_file = relative(module_path)
+            source_module = os.path.basename(module_path).replace(".py", "")
+
+            for entity_name, deps in entities.items():
+                # Skip module-level placeholder when it has no deps
+                if entity_name == "_" and not deps:
+                    continue
+
+                source_entity = entity_name if entity_name != "_" else "(module-level)"
+                if entity_name == "_":
+                    source_type = "module"
+                else:
+                    source_type = get_entity_type(module_path, entity_name)
+
+                for dep in deps:
+                    target_module = ""
+                    target_entity = dep
+                    target_file = ""
+                    target_type = "external"
+
+                    if "." in dep:
+                        parts = dep.split(".", 1)
+                        dep_mod_name = parts[0]
+                        dep_ent_name = parts[1]
+
+                        if dep_ent_name == "_":
+                            # module-level import link (e.g., "utils._")
+                            target_entity = "(module-level)"
+                            target_module = dep_mod_name
+                            target_type = "module"
+                        else:
+                            target_module = dep_mod_name
+                            target_entity = dep_ent_name
+
+                        # Resolve file path
+                        if dep_mod_name in module_name_to_path:
+                            resolved_path = module_name_to_path[dep_mod_name]
+                            target_file = relative(resolved_path)
+                            if dep_ent_name != "_":
+                                target_type = get_entity_type(resolved_path, dep_ent_name)
+                    else:
+                        # Local entity (same module)
+                        target_module = source_module
+                        target_file = source_file
+                        target_type = get_entity_type(module_path, dep)
+
+                    writer.writerow({
+                        'source_file': source_file,
+                        'source_module': source_module,
+                        'source_entity': source_entity,
+                        'source_type': source_type,
+                        'target_file': target_file,
+                        'target_module': target_module,
+                        'target_entity': target_entity,
+                        'target_type': target_type,
+                    })
+
+    click.echo(f"Detailed graph data exported to CSV: {output_path}")
+
+
 def export_to_csv(modules_entities: Dict, entity_metadata: Dict = None, output_path: str = None) -> None:
     """Export graph data to CSV file.
 

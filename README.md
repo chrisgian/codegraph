@@ -81,26 +81,48 @@ This will generate an interactive HTML visualization and open it in your browser
 | Option | Description |
 |--------|-------------|
 | `--output PATH` | Custom output path for HTML file (default: `./codegraph.html`) |
-| `--csv PATH` | Export graph data to CSV file |
+| `--csv PATH` | Export summary CSV (one row per node with connection counts) |
+| `--csv-detail PATH` | Export detailed CSV (one row per dependency edge) |
 | `--matplotlib` | Use legacy matplotlib visualization instead of D3.js |
 | `-o, --object-only` | Print dependencies to console only, no visualization |
 
 ### CSV Export
 
-Export graph data to CSV for analysis in spreadsheets or other tools:
+#### Summary (`--csv`)
+
+Export node-level summary with connection counts:
 
 ```console
 codegraph /path/to/code --csv output.csv
 ```
 
-CSV columns:
-- `name` - Entity name
-- `type` - module / function / class / external
-- `parent_module` - Parent module (for functions/classes)
-- `full_path` - File path
-- `links_out` - Outgoing dependencies count
-- `links_in` - Incoming dependencies count
-- `lines` - Lines of code
+Columns: `name`, `type`, `parent_module`, `full_path`, `links_out`, `links_in`, `lines`
+
+#### Detailed (`--csv-detail`)
+
+Export every dependency edge with full source and target context:
+
+```console
+codegraph /path/to/code --csv-detail output.csv
+```
+
+One row per dependency edge. Example output:
+
+| source_file | source_module | source_entity | source_type | target_file | target_module | target_entity | target_type |
+|---|---|---|---|---|---|---|---|
+| codegraph/main.py | main | main | function | codegraph/core.py | core | CodeGraph | class |
+| codegraph/core.py | core | CodeGraph | class | codegraph/utils.py | utils | get_python_paths_list | function |
+| codegraph/core.py | core | parse_code_file | function | codegraph/parser.py | parser | create_objects_array | function |
+
+Columns:
+- `source_file` - Relative path of the file containing the source entity
+- `source_module` - Module name of the source
+- `source_entity` - Name of the entity that has the dependency
+- `source_type` - Type of the source (function / class / module)
+- `target_file` - Relative path of the file containing the target entity
+- `target_module` - Module name of the target
+- `target_entity` - Name of the entity being depended on
+- `target_type` - Type of the target (function / class / module / external)
 
 ## Changelog
 

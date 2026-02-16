@@ -6,7 +6,7 @@ from argparse import Namespace
 
 from codegraph.core import CodeGraph
 from codegraph.parser import create_objects_array, Import
-from codegraph.vizualyzer import convert_to_d3_format, export_to_csv
+from codegraph.vizualyzer import convert_to_d3_format, export_to_csv, export_to_csv_detail
 
 
 TEST_DATA_DIR = pathlib.Path(__file__).parent / "test_data"
@@ -509,5 +509,191 @@ class TestCSVExport:
         assert codegraph_row['type'] == 'class'
         assert codegraph_row['parent_module'] == 'core.py'
         assert int(codegraph_row['lines']) > 0
+
+        pathlib.Path(output_path).unlink()
+
+
+class TestCSVDetailExport:
+    """Tests for detailed edge-level CSV export functionality."""
+
+    def test_detail_export_creates_file(self):
+        """Test that export_to_csv_detail creates a CSV file."""
+        usage_graph = {
+            "/path/to/module.py": {
+                "func_a": ["func_b"],
+                "func_b": [],
+            }
+        }
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            output_path = f.name
+
+        export_to_csv_detail(usage_graph, output_path=output_path)
+
+        assert pathlib.Path(output_path).exists()
+        pathlib.Path(output_path).unlink()
+
+    def test_detail_export_has_correct_columns(self):
+        """Test that detail CSV has all required columns."""
+        usage_graph = {
+            "/path/to/module.py": {
+                "func_a": ["func_b"],
+                "func_b": [],
+            }
+        }
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            output_path = f.name
+
+        export_to_csv_detail(usage_graph, output_path=output_path)
+
+        with open(output_path, 'r') as csvfile:
+            reader = csv.DictReader(csvfile)
+            fieldnames = reader.fieldnames
+
+        expected = [
+            'source_file', 'source_module', 'source_entity', 'source_type',
+            'target_file', 'target_module', 'target_entity', 'target_type',
+        ]
+        assert fieldnames == expected
+        pathlib.Path(output_path).unlink()
+
+    def test_detail_export_one_row_per_edge(self):
+        """Test that each dependency edge produces exactly one row."""
+        usage_graph = {
+            "/path/to/module.py": {
+                "func_a": ["func_b", "func_c"],
+                "func_b": ["func_c"],
+                "func_c": [],
+            }
+        }
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            output_path = f.name
+
+        export_to_csv_detail(usage_graph, output_path=output_path)
+
+        with open(output_path, 'r') as csvfile:
+            reader = csv.DictReader(csvfile)
+            rows = list(reader)
+
+        # func_a→func_b, func_a→func_c, func_b→func_c = 3 edges
+        assert len(rows) == 3
+        pathlib.Path(output_path).unlink()
+
+    def test_detail_export_cross_module_edges(self):
+        """Test that cross-module edges resolve file/module correctly."""
+        usage_graph = {
+            "/path/to/a.py": {
+                "func_a": ["b.func_b"],
+            },
+            "/path/to/b.py": {
+                "func_b": [],
+            },
+        }
+        entity_metadata = {
+            "/path/to/a.py": {"func_a": {"entity_type": "function", "lines": 5}},
+            "/path/to/b.py": {"func_b": {"entity_type": "function", "lines": 3}},
+        }
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            output_path = f.name
+
+        export_to_csv_detail(usage_graph, entity_metadata=entity_metadata, output_path=output_path)
+
+        with open(output_path, 'r') as csvfile:
+            reader = csv.DictReader(csvfile)
+            rows = list(reader)
+
+        # Find the func_a → func_b edge
+        edge = next((r for r in rows if r['source_entity'] == 'func_a' and r['target_entity'] == 'func_b'), None)
+        assert edge is not None
+        assert edge['source_module'] == 'a'
+        assert edge['target_module'] == 'b'
+        assert edge['source_type'] == 'function'
+        assert edge['target_type'] == 'function'
+        assert 'b.py' in edge['target_file']
+
+        pathlib.Path(output_path).unlink()
+
+    def test_detail_export_entity_types(self):
+        """Test that source and target types are resolved from metadata."""
+        usage_graph = {
+            "/path/to/module.py": {
+                "MyClass": ["helper_func"],
+                "helper_func": [],
+            }
+        }
+        entity_metadata = {
+            "/path/to/module.py": {
+                "MyClass": {"entity_type": "class", "lines": 50},
+                "helper_func": {"entity_type": "function", "lines": 10},
+            }
+        }
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            output_path = f.name
+
+        export_to_csv_detail(usage_graph, entity_metadata=entity_metadata, output_path=output_path)
+
+        with open(output_path, 'r') as csvfile:
+            reader = csv.DictReader(csvfile)
+            rows = list(reader)
+
+        edge = rows[0]
+        assert edge['source_entity'] == 'MyClass'
+        assert edge['source_type'] == 'class'
+        assert edge['target_entity'] == 'helper_func'
+        assert edge['target_type'] == 'function'
+
+        pathlib.Path(output_path).unlink()
+
+    def test_detail_export_no_rows_for_no_deps(self):
+        """Test that entities with no dependencies produce no rows."""
+        usage_graph = {
+            "/path/to/module.py": {
+                "func_a": [],
+                "func_b": [],
+            }
+        }
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            output_path = f.name
+
+        export_to_csv_detail(usage_graph, output_path=output_path)
+
+        with open(output_path, 'r') as csvfile:
+            reader = csv.DictReader(csvfile)
+            rows = list(reader)
+
+        assert len(rows) == 0
+        pathlib.Path(output_path).unlink()
+
+    def test_detail_export_codegraph_on_itself(self):
+        """Test detail CSV export on codegraph package itself."""
+        codegraph_path = pathlib.Path(__file__).parents[1] / "codegraph"
+        args = Namespace(paths=[codegraph_path.as_posix()])
+
+        code_graph = CodeGraph(args)
+        usage_graph = code_graph.usage_graph()
+        entity_metadata = code_graph.get_entity_metadata()
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            output_path = f.name
+
+        export_to_csv_detail(usage_graph, entity_metadata=entity_metadata, output_path=output_path)
+
+        with open(output_path, 'r') as csvfile:
+            reader = csv.DictReader(csvfile)
+            rows = list(reader)
+
+        # Should have edges
+        assert len(rows) > 0
+
+        # CodeGraph should appear as a source calling get_code_objects
+        cg_edges = [r for r in rows if r['source_entity'] == 'CodeGraph']
+        assert len(cg_edges) > 0
+        target_entities = [r['target_entity'] for r in cg_edges]
+        assert 'get_code_objects' in target_entities
+
+        # main should call CodeGraph across modules
+        main_to_core = [r for r in rows if r['source_entity'] == 'main' and r['target_entity'] == 'CodeGraph']
+        assert len(main_to_core) > 0
+        assert main_to_core[0]['source_module'] == 'main'
+        assert main_to_core[0]['target_module'] == 'core'
 
         pathlib.Path(output_path).unlink()
