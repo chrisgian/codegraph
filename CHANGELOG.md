@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Matches against base name (e.g., `logger` matches `module.logger`)
 - Can be combined with `--focus` for cleaner method-level graphs
 
+**Detailed CSV Export**
+- New `--csv-detail PATH` option to export every dependency edge as a CSV row
+- Each row contains: `source_file`, `source_module`, `source_entity`, `source_type`, `target_file`, `target_module`, `target_entity`, `target_type`
+- Cross-module references are resolved to full file paths and entity types
+- Complements the existing `--csv` summary export (which shows node-level connection counts)
+- Works with `--focus` and `--exclude`
+
 ### Changed
 - `FocusConfig` dataclass added to `core.py` to encapsulate focus/exclude settings
 - `vizualyzer.py` updated to resolve method-level dotted names (e.g., `Game.play_round`) correctly in D3 format

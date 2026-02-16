@@ -52,7 +52,12 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
     default=None,
     help="Comma-separated entity names to exclude (e.g., logger,print)",
 )
-def cli(paths, object_only, file_path, distance, matplotlib, output, csv, focus, exclude):
+@click.option(
+    "--csv-detail",
+    type=click.Path(),
+    help="Export detailed edge-level dependencies to CSV (one row per connection)",
+)
+def cli(paths, object_only, file_path, distance, matplotlib, output, csv, focus, exclude, csv_detail):
     """
     Tool that creates a graph of code to show dependencies between code entities (methods, classes, etc.).
     CodeGraph does not execute code, it is based only on lex and syntax parsing.
@@ -76,6 +81,7 @@ def cli(paths, object_only, file_path, distance, matplotlib, output, csv, focus,
         csv=csv,
         focus=focus,
         exclude=exclude,
+        csv_detail=csv_detail,
     )
     main(args)
 
@@ -92,6 +98,10 @@ def main(args):
             click.echo(f"  Distance {distance}: {', '.join(files)}")
     elif args.object_only:
         pprint.pprint(usage_graph)
+    elif getattr(args, 'csv_detail', None):
+        import codegraph.vizualyzer as vz
+
+        vz.export_to_csv_detail(usage_graph, entity_metadata=entity_metadata, output_path=args.csv_detail)
     elif args.csv:
         import codegraph.vizualyzer as vz
 

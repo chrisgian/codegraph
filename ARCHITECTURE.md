@@ -122,6 +122,10 @@ Provides two visualization modes: D3.js (default) and matplotlib (legacy).
 - Search with autocomplete
 - Tooltips and statistics panel
 
+**CSV Export:**
+- `export_to_csv()` - Summary export: one row per node with connection counts
+- `export_to_csv_detail()` - Detailed export: one row per dependency edge with source/target file, module, entity, and type labels. Reads directly from the `usage_graph` dict and resolves cross-module references to full file paths.
+
 **Matplotlib Visualization:**
 - `draw_graph_matplotlib()` - Legacy visualization using networkx
 - `process_module_in_graph()` - Process single module into graph
@@ -148,7 +152,8 @@ Click-based command-line interface.
 - `paths` - Directory or file paths to analyze
 - `--focus` - Focus on a class for method-level analysis (e.g., `engine.py:Game`)
 - `--exclude` - Comma-separated entity names to exclude (e.g., `logger,print`)
-- `--csv PATH` - Export graph data to CSV file
+- `--csv PATH` - Export summary CSV (one row per node with connection counts)
+- `--csv-detail PATH` - Export detailed CSV (one row per dependency edge)
 - `--matplotlib` - Use legacy matplotlib visualization
 - `--output` - Custom output path for HTML file
 
