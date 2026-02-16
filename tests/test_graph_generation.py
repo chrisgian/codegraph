@@ -1,12 +1,13 @@
 """Tests for graph generation functionality."""
 import csv
+import json
 import pathlib
 import tempfile
 from argparse import Namespace
 
 from codegraph.core import CodeGraph, FocusConfig
 from codegraph.parser import create_objects_array, Import
-from codegraph.vizualyzer import convert_to_d3_format, export_to_csv, export_to_csv_detail
+from codegraph.vizualyzer import convert_to_d3_format, export_to_csv, export_to_csv_detail, export_to_json, export_to_json_detail
 
 
 TEST_DATA_DIR = pathlib.Path(__file__).parent / "test_data"
@@ -823,5 +824,441 @@ class TestCSVDetailExport:
         assert len(main_to_core) > 0
         assert main_to_core[0]['source_module'] == 'main'
         assert main_to_core[0]['target_module'] == 'core'
+
+        pathlib.Path(output_path).unlink()
+
+
+class TestJSONExport:
+    """Tests for JSON export functionality."""
+
+    def test_export_creates_file(self):
+        """Test that export_to_json creates a JSON file."""
+        usage_graph = {
+            "/path/to/module.py": {
+                "func_a": ["func_b"],
+                "func_b": [],
+            }
+        }
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            output_path = f.name
+
+        export_to_json(usage_graph, output_path=output_path)
+
+        assert pathlib.Path(output_path).exists()
+        pathlib.Path(output_path).unlink()
+
+    def test_export_valid_json(self):
+        """Test that output is valid JSON with correct top-level structure."""
+        usage_graph = {
+            "/path/to/module.py": {
+                "func_a": ["func_b"],
+                "func_b": [],
+            }
+        }
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            output_path = f.name
+
+        export_to_json(usage_graph, output_path=output_path)
+
+        with open(output_path, 'r') as f:
+            data = json.load(f)
+
+        assert "metadata" in data
+        assert "nodes" in data
+        assert data["metadata"]["generated_by"] == "codegraph"
+        assert "version" in data["metadata"]
+        assert "analyzed_paths" in data["metadata"]
+
+        pathlib.Path(output_path).unlink()
+
+    def test_export_metadata_paths(self):
+        """Test that analyzed_paths are included in metadata."""
+        usage_graph = {
+            "/path/to/module.py": {
+                "func_a": [],
+            }
+        }
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            output_path = f.name
+
+        export_to_json(usage_graph, output_path=output_path, analyzed_paths=("/my/code",))
+
+        with open(output_path, 'r') as f:
+            data = json.load(f)
+
+        assert data["metadata"]["analyzed_paths"] == ["/my/code"]
+
+        pathlib.Path(output_path).unlink()
+
+    def test_export_node_fields(self):
+        """Test that nodes have all required fields."""
+        usage_graph = {
+            "/path/to/module.py": {
+                "func_a": [],
+            }
+        }
+        entity_metadata = {
+            "/path/to/module.py": {
+                "func_a": {"lines": 10, "entity_type": "function"}
+            }
+        }
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            output_path = f.name
+
+        export_to_json(usage_graph, entity_metadata=entity_metadata, output_path=output_path)
+
+        with open(output_path, 'r') as f:
+            data = json.load(f)
+
+        required_fields = {"name", "type", "parent_module", "file_path", "lines", "dependencies_out", "dependencies_in"}
+        for node in data["nodes"]:
+            assert required_fields.issubset(node.keys()), f"Missing fields in node: {required_fields - node.keys()}"
+
+        pathlib.Path(output_path).unlink()
+
+    def test_export_module_data(self):
+        """Test that module nodes are exported correctly."""
+        usage_graph = {
+            "/path/to/module.py": {
+                "func_a": [],
+            }
+        }
+        entity_metadata = {
+            "/path/to/module.py": {
+                "func_a": {"lines": 10, "entity_type": "function"}
+            }
+        }
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            output_path = f.name
+
+        export_to_json(usage_graph, entity_metadata=entity_metadata, output_path=output_path)
+
+        with open(output_path, 'r') as f:
+            data = json.load(f)
+
+        module_node = next((n for n in data["nodes"] if n["type"] == "module"), None)
+        assert module_node is not None
+        assert module_node["name"] == "module.py"
+        assert module_node["parent_module"] == ""
+
+        pathlib.Path(output_path).unlink()
+
+    def test_export_entity_data(self):
+        """Test that entity nodes are exported correctly."""
+        usage_graph = {
+            "/path/to/module.py": {
+                "my_function": [],
+                "MyClass": [],
+            }
+        }
+        entity_metadata = {
+            "/path/to/module.py": {
+                "my_function": {"lines": 15, "entity_type": "function"},
+                "MyClass": {"lines": 50, "entity_type": "class"},
+            }
+        }
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            output_path = f.name
+
+        export_to_json(usage_graph, entity_metadata=entity_metadata, output_path=output_path)
+
+        with open(output_path, 'r') as f:
+            data = json.load(f)
+
+        func_node = next((n for n in data["nodes"] if n["name"] == "my_function"), None)
+        assert func_node is not None
+        assert func_node["type"] == "function"
+        assert func_node["parent_module"] == "module.py"
+        assert func_node["lines"] == 15
+
+        class_node = next((n for n in data["nodes"] if n["name"] == "MyClass"), None)
+        assert class_node is not None
+        assert class_node["type"] == "class"
+        assert class_node["lines"] == 50
+
+        pathlib.Path(output_path).unlink()
+
+    def test_export_external_deps(self):
+        """Test that external dependencies appear as external nodes."""
+        usage_graph = {
+            "/path/to/module.py": {
+                "func_a": ["external_lib"],
+            }
+        }
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            output_path = f.name
+
+        export_to_json(usage_graph, output_path=output_path)
+
+        with open(output_path, 'r') as f:
+            data = json.load(f)
+
+        external_node = next((n for n in data["nodes"] if n["type"] == "external"), None)
+        assert external_node is not None
+        assert external_node["name"] == "external_lib"
+
+        pathlib.Path(output_path).unlink()
+
+    def test_export_links_count(self):
+        """Test that dependencies_in and dependencies_out are calculated correctly."""
+        usage_graph = {
+            "/path/to/a.py": {
+                "func_a": ["b.func_b", "b.func_c"],
+            },
+            "/path/to/b.py": {
+                "func_b": [],
+                "func_c": [],
+            },
+        }
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            output_path = f.name
+
+        export_to_json(usage_graph, output_path=output_path)
+
+        with open(output_path, 'r') as f:
+            data = json.load(f)
+
+        func_a = next((n for n in data["nodes"] if n["name"] == "func_a"), None)
+        assert func_a is not None
+        assert func_a["dependencies_out"] >= 2
+
+        func_b = next((n for n in data["nodes"] if n["name"] == "func_b"), None)
+        assert func_b is not None
+        assert func_b["dependencies_in"] >= 1
+
+        pathlib.Path(output_path).unlink()
+
+    def test_export_codegraph_on_itself(self):
+        """Test JSON export on codegraph package itself."""
+        codegraph_path = pathlib.Path(__file__).parents[1] / "codegraph"
+        args = Namespace(paths=[codegraph_path.as_posix()])
+
+        code_graph = CodeGraph(args)
+        usage_graph = code_graph.usage_graph()
+        entity_metadata = code_graph.get_entity_metadata()
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            output_path = f.name
+
+        export_to_json(usage_graph, entity_metadata=entity_metadata, output_path=output_path, analyzed_paths=args.paths)
+
+        with open(output_path, 'r') as f:
+            data = json.load(f)
+
+        assert "metadata" in data
+        assert "nodes" in data
+
+        module_names = [n["name"] for n in data["nodes"] if n["type"] == "module"]
+        assert "core.py" in module_names
+        assert "parser.py" in module_names
+        assert "main.py" in module_names
+        assert "vizualyzer.py" in module_names
+
+        types = set(n["type"] for n in data["nodes"])
+        assert "module" in types
+        assert "function" in types
+        assert "class" in types
+
+        codegraph_node = next((n for n in data["nodes"] if n["name"] == "CodeGraph"), None)
+        assert codegraph_node is not None
+        assert codegraph_node["type"] == "class"
+        assert codegraph_node["parent_module"] == "core.py"
+        assert codegraph_node["lines"] > 0
+
+        pathlib.Path(output_path).unlink()
+
+
+class TestJSONDetailExport:
+    """Tests for detailed edge-level JSON export functionality."""
+
+    def test_detail_export_creates_file(self):
+        """Test that export_to_json_detail creates a JSON file."""
+        usage_graph = {
+            "/path/to/module.py": {
+                "func_a": ["func_b"],
+                "func_b": [],
+            }
+        }
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            output_path = f.name
+
+        export_to_json_detail(usage_graph, output_path=output_path)
+
+        assert pathlib.Path(output_path).exists()
+        pathlib.Path(output_path).unlink()
+
+    def test_detail_export_valid_json(self):
+        """Test that output is valid JSON with correct top-level structure."""
+        usage_graph = {
+            "/path/to/module.py": {
+                "func_a": ["func_b"],
+                "func_b": [],
+            }
+        }
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            output_path = f.name
+
+        export_to_json_detail(usage_graph, output_path=output_path)
+
+        with open(output_path, 'r') as f:
+            data = json.load(f)
+
+        assert "metadata" in data
+        assert "edges" in data
+        assert data["metadata"]["generated_by"] == "codegraph"
+        assert "version" in data["metadata"]
+        assert "analyzed_paths" in data["metadata"]
+
+        pathlib.Path(output_path).unlink()
+
+    def test_detail_export_edge_structure(self):
+        """Test that each edge has source and target with required fields."""
+        usage_graph = {
+            "/path/to/module.py": {
+                "func_a": ["func_b"],
+                "func_b": [],
+            }
+        }
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            output_path = f.name
+
+        export_to_json_detail(usage_graph, output_path=output_path)
+
+        with open(output_path, 'r') as f:
+            data = json.load(f)
+
+        assert len(data["edges"]) == 1
+        edge = data["edges"][0]
+        for side in ("source", "target"):
+            assert "file" in edge[side]
+            assert "module" in edge[side]
+            assert "entity" in edge[side]
+            assert "type" in edge[side]
+
+        pathlib.Path(output_path).unlink()
+
+    def test_detail_export_one_entry_per_edge(self):
+        """Test that each dependency edge produces exactly one entry."""
+        usage_graph = {
+            "/path/to/module.py": {
+                "func_a": ["func_b", "func_c"],
+                "func_b": ["func_c"],
+                "func_c": [],
+            }
+        }
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            output_path = f.name
+
+        export_to_json_detail(usage_graph, output_path=output_path)
+
+        with open(output_path, 'r') as f:
+            data = json.load(f)
+
+        assert len(data["edges"]) == 3
+        pathlib.Path(output_path).unlink()
+
+    def test_detail_export_cross_module_edges(self):
+        """Test that cross-module edges resolve file/module correctly."""
+        usage_graph = {
+            "/path/to/a.py": {
+                "func_a": ["b.func_b"],
+            },
+            "/path/to/b.py": {
+                "func_b": [],
+            },
+        }
+        entity_metadata = {
+            "/path/to/a.py": {"func_a": {"entity_type": "function", "lines": 5}},
+            "/path/to/b.py": {"func_b": {"entity_type": "function", "lines": 3}},
+        }
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            output_path = f.name
+
+        export_to_json_detail(usage_graph, entity_metadata=entity_metadata, output_path=output_path)
+
+        with open(output_path, 'r') as f:
+            data = json.load(f)
+
+        edge = next((e for e in data["edges"] if e["source"]["entity"] == "func_a" and e["target"]["entity"] == "func_b"), None)
+        assert edge is not None
+        assert edge["source"]["module"] == "a"
+        assert edge["target"]["module"] == "b"
+        assert edge["source"]["type"] == "function"
+        assert edge["target"]["type"] == "function"
+        assert "b.py" in edge["target"]["file"]
+
+        pathlib.Path(output_path).unlink()
+
+    def test_detail_export_no_edges_for_no_deps(self):
+        """Test that entities with no dependencies produce no edges."""
+        usage_graph = {
+            "/path/to/module.py": {
+                "func_a": [],
+                "func_b": [],
+            }
+        }
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            output_path = f.name
+
+        export_to_json_detail(usage_graph, output_path=output_path)
+
+        with open(output_path, 'r') as f:
+            data = json.load(f)
+
+        assert len(data["edges"]) == 0
+        pathlib.Path(output_path).unlink()
+
+    def test_detail_export_external_deps(self):
+        """Test that external dependencies have type 'external'."""
+        usage_graph = {
+            "/path/to/module.py": {
+                "func_a": ["unknown_lib"],
+            }
+        }
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            output_path = f.name
+
+        export_to_json_detail(usage_graph, output_path=output_path)
+
+        with open(output_path, 'r') as f:
+            data = json.load(f)
+
+        assert len(data["edges"]) == 1
+        assert data["edges"][0]["target"]["type"] == "external"
+
+        pathlib.Path(output_path).unlink()
+
+    def test_detail_export_codegraph_on_itself(self):
+        """Test detail JSON export on codegraph package itself."""
+        codegraph_path = pathlib.Path(__file__).parents[1] / "codegraph"
+        args = Namespace(paths=[codegraph_path.as_posix()], focus=None, exclude=None)
+
+        code_graph = CodeGraph(args)
+        usage_graph = code_graph.usage_graph()
+        entity_metadata = code_graph.get_entity_metadata()
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            output_path = f.name
+
+        export_to_json_detail(usage_graph, entity_metadata=entity_metadata, output_path=output_path, analyzed_paths=args.paths)
+
+        with open(output_path, 'r') as f:
+            data = json.load(f)
+
+        assert "metadata" in data
+        assert "edges" in data
+        assert len(data["edges"]) > 0
+
+        # CodeGraph should appear as a source calling get_code_objects
+        cg_edges = [e for e in data["edges"] if e["source"]["entity"] == "CodeGraph"]
+        assert len(cg_edges) > 0
+        target_entities = [e["target"]["entity"] for e in cg_edges]
+        assert "get_code_objects" in target_entities
+
+        # main should call CodeGraph across modules
+        main_to_core = [e for e in data["edges"] if e["source"]["entity"] == "main" and e["target"]["entity"] == "CodeGraph"]
+        assert len(main_to_core) > 0
+        assert main_to_core[0]["source"]["module"] == "main"
+        assert main_to_core[0]["target"]["module"] == "core"
 
         pathlib.Path(output_path).unlink()

@@ -582,3 +582,241 @@ def export_to_csv(modules_entities: Dict, entity_metadata: Dict = None, output_p
             })
 
     click.echo(f"Graph data exported to CSV: {output_path}")
+
+
+def export_to_json(modules_entities: Dict, entity_metadata: Dict = None, output_path: str = None, analyzed_paths: tuple = ()) -> None:
+    """Export graph data to JSON file (summary: one entry per node).
+
+    Args:
+        modules_entities: Graph data with modules and their entities.
+        entity_metadata: Metadata for entities (lines of code, type).
+        output_path: Path to save JSON file. Default: ./codegraph.json
+        analyzed_paths: Original paths passed to codegraph for metadata.
+    """
+    import click
+
+    from codegraph import __version__
+
+    # Reuse D3 format conversion for consistent link counting
+    graph_data = convert_to_d3_format(modules_entities, entity_metadata)
+    nodes = graph_data["nodes"]
+    links = graph_data["links"]
+
+    # Build links_in and links_out counts (same logic as export_to_csv)
+    links_out: Dict[str, int] = {}
+    links_in: Dict[str, int] = {}
+
+    for link in links:
+        source = link["source"]
+        target = link["target"]
+        link_type = link.get("type", "")
+
+        if link_type == "module-entity":
+            continue
+
+        links_out[source] = links_out.get(source, 0) + 1
+        links_in[target] = links_in.get(target, 0) + 1
+
+    # Build JSON nodes
+    json_nodes = []
+    for node in nodes:
+        node_id = node["id"]
+        node_type = node.get("type", "")
+
+        if node_type == "module":
+            json_nodes.append({
+                "name": node_id,
+                "type": "module",
+                "parent_module": "",
+                "file_path": node.get("fullPath", ""),
+                "lines": node.get("lines", 0),
+                "dependencies_out": links_out.get(node_id, 0),
+                "dependencies_in": links_in.get(node_id, 0),
+            })
+        elif node_type == "entity":
+            parent = node.get("parent", "")
+            full_path = ""
+            for n in nodes:
+                if n["id"] == parent and n["type"] == "module":
+                    full_path = n.get("fullPath", "")
+                    break
+            json_nodes.append({
+                "name": node.get("label", node_id),
+                "type": node.get("entityType", "function"),
+                "parent_module": parent,
+                "file_path": full_path,
+                "lines": node.get("lines", 0),
+                "dependencies_out": links_out.get(node_id, 0),
+                "dependencies_in": links_in.get(node_id, 0),
+            })
+        else:  # external
+            json_nodes.append({
+                "name": node.get("label", node_id),
+                "type": "external",
+                "parent_module": "",
+                "file_path": "",
+                "lines": 0,
+                "dependencies_out": links_out.get(node_id, 0),
+                "dependencies_in": links_in.get(node_id, 0),
+            })
+
+    output_data = {
+        "metadata": {
+            "generated_by": "codegraph",
+            "version": __version__,
+            "analyzed_paths": list(analyzed_paths),
+        },
+        "nodes": json_nodes,
+    }
+
+    # Determine output path
+    if output_path is None:
+        output_path = os.path.join(os.getcwd(), "codegraph.json")
+    output_path = os.path.abspath(output_path)
+
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(output_data, f, indent=2)
+
+    click.echo(f"Graph data exported to JSON: {output_path}")
+
+
+def export_to_json_detail(modules_entities: Dict, entity_metadata: Dict = None, output_path: str = None, analyzed_paths: tuple = ()) -> None:
+    """Export detailed edge-level graph data to JSON file.
+
+    One entry per dependency edge: source entity -> target entity.
+
+    Args:
+        modules_entities: Graph data with modules and their entities.
+        entity_metadata: Metadata for entities (lines of code, type).
+        output_path: Path to save JSON file. Default: ./codegraph_detail.json
+        analyzed_paths: Original paths passed to codegraph for metadata.
+    """
+    import click
+
+    from codegraph import __version__
+
+    if entity_metadata is None:
+        entity_metadata = {}
+
+    # Build lookup: module_name (no .py) -> full path
+    module_name_to_path: Dict[str, str] = {}
+    for path in modules_entities:
+        mod_name = os.path.basename(path).replace(".py", "")
+        module_name_to_path[mod_name] = path
+
+    # Build lookup: entity_name -> (full_path, module_name)
+    entity_to_location: Dict[str, tuple] = {}
+    for path, entities in modules_entities.items():
+        mod_name = os.path.basename(path).replace(".py", "")
+        for ent_name in entities:
+            if ent_name == "_":
+                continue
+            entity_to_location[ent_name] = (path, mod_name)
+            entity_to_location[f"{mod_name}.{ent_name}"] = (path, mod_name)
+
+    # Find common root for relative paths
+    all_paths = list(modules_entities.keys())
+    if all_paths:
+        common_root = os.path.dirname(os.path.commonpath(all_paths))
+    else:
+        common_root = ""
+
+    def relative(p: str) -> str:
+        return os.path.relpath(p, common_root) if common_root else p
+
+    def get_entity_type(path: str, entity_name: str) -> str:
+        meta = entity_metadata.get(path, {}).get(entity_name, {})
+        return meta.get("entity_type", "function")
+
+    # Build edges
+    json_edges = []
+
+    for module_path, entities in modules_entities.items():
+        source_file = relative(module_path)
+        source_module = os.path.basename(module_path).replace(".py", "")
+
+        for entity_name, deps in entities.items():
+            if entity_name == "_" and not deps:
+                continue
+
+            source_entity = entity_name if entity_name != "_" else "(module-level)"
+            if entity_name == "_":
+                source_type = "module"
+            else:
+                source_type = get_entity_type(module_path, entity_name)
+
+            for dep in deps:
+                target_module = ""
+                target_entity = dep
+                target_file = ""
+                target_type = "external"
+
+                if "." in dep:
+                    parts = dep.split(".", 1)
+                    dep_mod_name = parts[0]
+                    dep_ent_name = parts[1]
+
+                    if dep_ent_name == "_":
+                        target_entity = "(module-level)"
+                        target_module = dep_mod_name
+                        target_type = "module"
+                        if dep_mod_name in module_name_to_path:
+                            target_file = relative(module_name_to_path[dep_mod_name])
+
+                    elif dep_mod_name in module_name_to_path:
+                        resolved_path = module_name_to_path[dep_mod_name]
+                        target_module = dep_mod_name
+                        target_entity = dep_ent_name
+                        target_file = relative(resolved_path)
+                        target_type = get_entity_type(resolved_path, dep_ent_name)
+
+                    elif dep in entity_to_location:
+                        resolved_path, resolved_mod = entity_to_location[dep]
+                        target_entity = dep
+                        target_module = resolved_mod
+                        target_file = relative(resolved_path)
+                        target_type = get_entity_type(resolved_path, dep)
+
+                    else:
+                        target_module = dep_mod_name
+                        target_entity = dep_ent_name
+
+                elif dep in entity_to_location:
+                    resolved_path, resolved_mod = entity_to_location[dep]
+                    target_module = resolved_mod
+                    target_file = relative(resolved_path)
+                    target_type = get_entity_type(resolved_path, dep)
+
+                json_edges.append({
+                    "source": {
+                        "file": source_file,
+                        "module": source_module,
+                        "entity": source_entity,
+                        "type": source_type,
+                    },
+                    "target": {
+                        "file": target_file,
+                        "module": target_module,
+                        "entity": target_entity,
+                        "type": target_type,
+                    },
+                })
+
+    output_data = {
+        "metadata": {
+            "generated_by": "codegraph",
+            "version": __version__,
+            "analyzed_paths": list(analyzed_paths),
+        },
+        "edges": json_edges,
+    }
+
+    # Determine output path
+    if output_path is None:
+        output_path = os.path.join(os.getcwd(), "codegraph_detail.json")
+    output_path = os.path.abspath(output_path)
+
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(output_data, f, indent=2)
+
+    click.echo(f"Detailed graph data exported to JSON: {output_path}")

@@ -57,7 +57,18 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
     type=click.Path(),
     help="Export detailed edge-level dependencies to CSV (one row per connection)",
 )
-def cli(paths, object_only, file_path, distance, matplotlib, output, csv, focus, exclude, csv_detail):
+@click.option(
+    "--json",
+    "json_output",
+    type=click.Path(),
+    help="Export graph data to JSON file (specify output path)",
+)
+@click.option(
+    "--json-detail",
+    type=click.Path(),
+    help="Export detailed edge-level dependencies to JSON (one entry per connection)",
+)
+def cli(paths, object_only, file_path, distance, matplotlib, output, csv, focus, exclude, csv_detail, json_output, json_detail):
     """
     Tool that creates a graph of code to show dependencies between code entities (methods, classes, etc.).
     CodeGraph does not execute code, it is based only on lex and syntax parsing.
@@ -82,6 +93,8 @@ def cli(paths, object_only, file_path, distance, matplotlib, output, csv, focus,
         focus=focus,
         exclude=exclude,
         csv_detail=csv_detail,
+        json=json_output,
+        json_detail=json_detail,
     )
     main(args)
 
@@ -98,6 +111,14 @@ def main(args):
             click.echo(f"  Distance {distance}: {', '.join(files)}")
     elif args.object_only:
         pprint.pprint(usage_graph)
+    elif getattr(args, 'json_detail', None):
+        import codegraph.vizualyzer as vz
+
+        vz.export_to_json_detail(usage_graph, entity_metadata=entity_metadata, output_path=args.json_detail, analyzed_paths=args.paths)
+    elif getattr(args, 'json', None):
+        import codegraph.vizualyzer as vz
+
+        vz.export_to_json(usage_graph, entity_metadata=entity_metadata, output_path=args.json, analyzed_paths=args.paths)
     elif getattr(args, 'csv_detail', None):
         import codegraph.vizualyzer as vz
 
