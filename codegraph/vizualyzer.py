@@ -379,6 +379,20 @@ def export_to_csv_detail(modules_entities: Dict, entity_metadata: Dict = None, o
         mod_name = os.path.basename(path).replace(".py", "")
         module_name_to_path[mod_name] = path
 
+    # Build lookup: entity_name → (full_path, module_name) for all known entities
+    # This handles both dotted names (Game.play_round from focus mode)
+    # and plain names (get_code_objects) correctly
+    entity_to_location: Dict[str, tuple] = {}
+    for path, entities in modules_entities.items():
+        mod_name = os.path.basename(path).replace(".py", "")
+        for ent_name in entities:
+            if ent_name == "_":
+                continue
+            # Register the entity as-is (handles dotted focus names like Game.play_round)
+            entity_to_location[ent_name] = (path, mod_name)
+            # Also register with module prefix (e.g., core.CodeGraph)
+            entity_to_location[f"{mod_name}.{ent_name}"] = (path, mod_name)
+
     # Find common root for relative paths
     all_paths = list(modules_entities.keys())
     if all_paths:
@@ -438,21 +452,38 @@ def export_to_csv_detail(modules_entities: Dict, entity_metadata: Dict = None, o
                             target_entity = "(module-level)"
                             target_module = dep_mod_name
                             target_type = "module"
+                            if dep_mod_name in module_name_to_path:
+                                target_file = relative(module_name_to_path[dep_mod_name])
+
+                        elif dep_mod_name in module_name_to_path:
+                            # Standard cross-module dep (e.g., utils.get_python_paths_list)
+                            resolved_path = module_name_to_path[dep_mod_name]
+                            target_module = dep_mod_name
+                            target_entity = dep_ent_name
+                            target_file = relative(resolved_path)
+                            target_type = get_entity_type(resolved_path, dep_ent_name)
+
+                        elif dep in entity_to_location:
+                            # Full dotted name is a known entity (e.g., Game.play_round from focus mode)
+                            resolved_path, resolved_mod = entity_to_location[dep]
+                            target_entity = dep
+                            target_module = resolved_mod
+                            target_file = relative(resolved_path)
+                            target_type = get_entity_type(resolved_path, dep)
+
                         else:
+                            # External dotted dep (not in analyzed codebase)
                             target_module = dep_mod_name
                             target_entity = dep_ent_name
 
-                        # Resolve file path
-                        if dep_mod_name in module_name_to_path:
-                            resolved_path = module_name_to_path[dep_mod_name]
-                            target_file = relative(resolved_path)
-                            if dep_ent_name != "_":
-                                target_type = get_entity_type(resolved_path, dep_ent_name)
-                    else:
-                        # Local entity (same module)
-                        target_module = source_module
-                        target_file = source_file
-                        target_type = get_entity_type(module_path, dep)
+                    elif dep in entity_to_location:
+                        # Known entity — resolve to its actual module/file
+                        resolved_path, resolved_mod = entity_to_location[dep]
+                        target_module = resolved_mod
+                        target_file = relative(resolved_path)
+                        target_type = get_entity_type(resolved_path, dep)
+
+                    # else: stays as external with empty file/module
 
                     writer.writerow({
                         'source_file': source_file,
