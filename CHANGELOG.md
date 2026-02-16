@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+**Method-Level Focus Mode**
+- New `--focus` option to drill into a specific class for method-level analysis (e.g., `--focus core.py:CodeGraph`)
+- Focused class is expanded from a single node into per-method nodes (`ClassName.method_name`)
+- Detects `self.method()` and `ClassName.method()` calls as intra-class dependency edges
+- Non-focused classes remain collapsed at class level
+- Methods appear as `entityType: "method"` in D3 visualization and `type: method` in CSV export
+
+**Entity Exclusion**
+- New `--exclude` option to filter noisy entities from the graph (e.g., `--exclude logger,print`)
+- Removes matching entities both as source nodes and from dependency lists
+- Matches against base name (e.g., `logger` matches `module.logger`)
+- Can be combined with `--focus` for cleaner method-level graphs
+
+### Changed
+- `FocusConfig` dataclass added to `core.py` to encapsulate focus/exclude settings
+- `vizualyzer.py` updated to resolve method-level dotted names (e.g., `Game.play_round`) correctly in D3 format
+- `populate_free_nodes()` now accepts optional `FocusConfig` parameter
+
 ## [1.2.0] - 2026-01-18
 
 ### Added

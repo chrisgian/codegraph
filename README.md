@@ -82,8 +82,34 @@ This will generate an interactive HTML visualization and open it in your browser
 |--------|-------------|
 | `--output PATH` | Custom output path for HTML file (default: `./codegraph.html`) |
 | `--csv PATH` | Export graph data to CSV file |
+| `--focus TARGET` | Focus on a class for method-level analysis (e.g., `engine.py:Game`) |
+| `--exclude NAMES` | Comma-separated entity names to exclude (e.g., `logger,print`) |
 | `--matplotlib` | Use legacy matplotlib visualization instead of D3.js |
 | `-o, --object-only` | Print dependencies to console only, no visualization |
+
+### Method-Level Focus
+
+Drill into a specific class to see method-level dependencies:
+
+```console
+codegraph /path/to/code --focus engine.py:Game
+```
+
+The `--focus` option expands the target class into individual method nodes, detecting `self.method()` calls as edges. Non-focused classes remain collapsed at class level.
+
+Combine with `--exclude` to filter out noisy entities:
+
+```console
+codegraph /path/to/code --focus core.py:CodeGraph --exclude logger,print
+```
+
+**What it detects:**
+- `self.method_name()` calls within the focused class
+- `ClassName.method_name()` calls (static/classmethod)
+
+**Limitations:**
+- Chained calls like `self.deck.shuffle()` do not resolve to `Deck.shuffle` (requires type inference)
+- Inherited methods not defined on the focused class won't be resolved
 
 ### CSV Export
 
@@ -94,9 +120,9 @@ codegraph /path/to/code --csv output.csv
 ```
 
 CSV columns:
-- `name` - Entity name
-- `type` - module / function / class / external
-- `parent_module` - Parent module (for functions/classes)
+- `name` - Entity name (e.g., `Game.play_round` for methods when using `--focus`)
+- `type` - module / function / class / method / external
+- `parent_module` - Parent module (for functions/classes/methods)
 - `full_path` - File path
 - `links_out` - Outgoing dependencies count
 - `links_in` - Incoming dependencies count

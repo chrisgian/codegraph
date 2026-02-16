@@ -56,27 +56,54 @@ The core module builds the dependency graph from parsed data.
 
 **Key Classes:**
 - `CodeGraph` - Main class that orchestrates graph building
+- `FocusConfig` - Dataclass holding focus/exclude settings for method-level analysis
 
 **Key Functions:**
 - `get_code_objects(paths_list)` - Parse all files and return dict of module → objects
 - `get_imports_and_entities_lines()` - Extract imports and entity line ranges
 - `collect_entities_usage_in_modules()` - Find where entities are used
 - `search_entity_usage()` - Check if entity is used in a line
+- `expand_entities_lines_for_focus()` - Replace class-level entry with per-method entries for focused class
+- `detect_self_method_calls()` - Scan focused class for `self.method()` and `ClassName.method()` patterns
+- `apply_exclusions()` - Remove excluded entity names from the dependency graph
 
 **Data Flow:**
 ```
-Python Files → Parser → Code Objects → Import Analysis → Entity Usage → Dependency Graph
+Python Files → Parser → Code Objects → Import Analysis → [Focus Expansion] → Entity Usage → [Self-call Detection] → Dependency Graph → [Exclusion Filter]
 ```
 
 **Graph Format:**
 ```python
+# Standard (class-level):
 {
     "/path/to/module.py": {
         "function_name": ["other_module.func1", "local_func"],
         "class_name": ["dependency1"],
     }
 }
+
+# With --focus (method-level for focused class):
+{
+    "/path/to/module.py": {
+        "Game.play_round": ["Game.deal_cards", "Game.calculate_score"],
+        "Game.deal_cards": [],
+        "helper_function": ["Game.play_round"],
+    }
+}
 ```
+
+**Focus Mode:**
+
+When `--focus file.py:ClassName` is used, the focused class is expanded from a single node into per-method nodes. The `FocusConfig` dataclass drives this:
+
+1. `expand_entities_lines_for_focus()` replaces the class-level `(lineno, endno) → ClassName` entry with per-method entries like `(method.lineno, method.endno) → ClassName.method_name`
+2. `detect_self_method_calls()` scans the class body for `self.method()` and `ClassName.method()` patterns, adding them as intra-class edges
+3. `apply_exclusions()` post-filters the graph to remove noisy entities like `logger` or `print`
+
+**Known Limitations:**
+- `self.deck.shuffle()` does NOT resolve to `Deck.shuffle` (requires type inference)
+- Inherited methods called via `self.inherited_method()` won't resolve if not defined on the focused class
+- Only `self.method()` and `ClassName.method()` patterns are detected for intra-class calls
 
 ### 3. Visualizer (`codegraph/vizualyzer.py`)
 
@@ -119,6 +146,9 @@ Click-based command-line interface.
 
 **Options:**
 - `paths` - Directory or file paths to analyze
+- `--focus` - Focus on a class for method-level analysis (e.g., `engine.py:Game`)
+- `--exclude` - Comma-separated entity names to exclude (e.g., `logger,print`)
+- `--csv PATH` - Export graph data to CSV file
 - `--matplotlib` - Use legacy matplotlib visualization
 - `--output` - Custom output path for HTML file
 
@@ -132,7 +162,7 @@ Helper functions for file system operations.
 ## Data Flow
 
 ```
-1. CLI receives path(s)
+1. CLI receives path(s) + optional --focus / --exclude
         ↓
 2. utils.get_python_paths_list() finds all .py files
         ↓
@@ -142,11 +172,14 @@ Helper functions for file system operations.
         ↓
 4. core.CodeGraph.usage_graph() builds dependency graph
    - Maps entities to line ranges
+   - [If --focus] Expands focused class into per-method entries
    - Finds entity usage in code
+   - [If --focus] Detects self.method() calls within focused class
    - Creates dependency edges
+   - [If --exclude] Removes excluded entities from graph
         ↓
 5. vizualyzer.draw_graph() creates visualization
-   - Converts to D3.js format
+   - Converts to D3.js format (handles method-level dotted names)
    - Generates HTML with embedded JS
    - Opens in browser
 ```
@@ -157,6 +190,7 @@ Helper functions for file system operations.
 |------|--------|-------------|
 | Module | Green square | Python .py file |
 | Entity | Blue circle | Function or class |
+| Method | Blue circle | Method within a focused class (only with `--focus`) |
 | External | Gray circle | Dependency from outside analyzed codebase |
 
 ## Link Types
