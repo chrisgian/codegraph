@@ -4,7 +4,7 @@ import pathlib
 import tempfile
 from argparse import Namespace
 
-from codegraph.core import CodeGraph
+from codegraph.core import CodeGraph, FocusConfig
 from codegraph.parser import create_objects_array, Import
 from codegraph.vizualyzer import convert_to_d3_format, export_to_csv
 
@@ -511,3 +511,132 @@ class TestCSVExport:
         assert int(codegraph_row['lines']) > 0
 
         pathlib.Path(output_path).unlink()
+
+
+class TestFocusAndExclude:
+    """Tests for method-level focus and exclude functionality."""
+
+    def _make_args(self, paths, focus=None, exclude=None):
+        return Namespace(paths=paths, focus=focus, exclude=exclude)
+
+    def test_focus_expands_methods(self):
+        """Test that focusing on a class expands its methods in the graph."""
+        module_path = (TEST_DATA_DIR / "focused_class.py").as_posix()
+        args = self._make_args([module_path], focus="focused_class.py:Game")
+        cg = CodeGraph(args)
+        usage_graph = cg.usage_graph()
+
+        # Method-level entries should exist
+        entity_names = list(usage_graph[module_path].keys())
+        assert "Game.play_round" in entity_names
+        assert "Game.deal_cards" in entity_names
+        assert "Game.calculate_score" in entity_names
+        assert "Game.reset" in entity_names
+        assert "Game.__init__" in entity_names
+
+    def test_self_method_detection(self):
+        """Test that self.method() calls create correct edges."""
+        module_path = (TEST_DATA_DIR / "focused_class.py").as_posix()
+        args = self._make_args([module_path], focus="focused_class.py:Game")
+        cg = CodeGraph(args)
+        usage_graph = cg.usage_graph()
+
+        # play_round calls self.deal_cards() and self.calculate_score()
+        play_round_deps = usage_graph[module_path].get("Game.play_round", [])
+        assert "Game.deal_cards" in play_round_deps
+        assert "Game.calculate_score" in play_round_deps
+
+    def test_non_focused_class_stays_collapsed(self):
+        """Test that non-focused classes remain at class level."""
+        module_path = (TEST_DATA_DIR / "focused_class.py").as_posix()
+        args = self._make_args([module_path], focus="focused_class.py:Game")
+        cg = CodeGraph(args)
+        usage_graph = cg.usage_graph()
+
+        entity_names = list(usage_graph[module_path].keys())
+        # Deck should remain as a single class-level entry
+        assert "Deck" in entity_names
+        # Deck methods should NOT be expanded
+        assert "Deck.shuffle" not in entity_names
+        assert "Deck.deal" not in entity_names
+
+    def test_exclude_removes_entities(self):
+        """Test that excluded names are removed from the graph."""
+        module_path = (TEST_DATA_DIR / "focused_class.py").as_posix()
+        args = self._make_args([module_path], exclude="logger")
+        cg = CodeGraph(args)
+        usage_graph = cg.usage_graph()
+
+        entity_names = list(usage_graph[module_path].keys())
+        assert "logger" not in entity_names
+
+    def test_exclude_multiple(self):
+        """Test that multiple comma-separated excludes work."""
+        module_path = (TEST_DATA_DIR / "focused_class.py").as_posix()
+        args = self._make_args([module_path], exclude="logger,helper_function")
+        cg = CodeGraph(args)
+        usage_graph = cg.usage_graph()
+
+        entity_names = list(usage_graph[module_path].keys())
+        assert "logger" not in entity_names
+        assert "helper_function" not in entity_names
+
+    def test_focus_nonexistent_class(self):
+        """Test graceful handling when focused class doesn't exist."""
+        module_path = (TEST_DATA_DIR / "focused_class.py").as_posix()
+        args = self._make_args([module_path], focus="focused_class.py:NonExistent")
+        cg = CodeGraph(args)
+        usage_graph = cg.usage_graph()
+
+        # Should produce a normal graph without errors
+        assert module_path in usage_graph
+        entity_names = list(usage_graph[module_path].keys())
+        # Normal class-level entries should be present
+        assert "Game" in entity_names
+        assert "Deck" in entity_names
+
+    def test_focus_with_csv_export(self):
+        """Test that CSV export includes method type for focused classes."""
+        module_path = (TEST_DATA_DIR / "focused_class.py").as_posix()
+        args = self._make_args([module_path], focus="focused_class.py:Game")
+        cg = CodeGraph(args)
+        usage_graph = cg.usage_graph()
+        entity_metadata = cg.get_entity_metadata()
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            output_path = f.name
+
+        export_to_csv(usage_graph, entity_metadata=entity_metadata, output_path=output_path)
+
+        with open(output_path, 'r') as csvfile:
+            reader = csv.DictReader(csvfile)
+            rows = list(reader)
+
+        # Should have method type rows
+        method_rows = [r for r in rows if r['type'] == 'method']
+        assert len(method_rows) > 0
+
+        method_names = [r['name'] for r in method_rows]
+        assert "Game.play_round" in method_names
+
+        pathlib.Path(output_path).unlink()
+
+    def test_focus_with_d3_export(self):
+        """Test that D3 format includes entityType: method for focused classes."""
+        module_path = (TEST_DATA_DIR / "focused_class.py").as_posix()
+        args = self._make_args([module_path], focus="focused_class.py:Game")
+        cg = CodeGraph(args)
+        usage_graph = cg.usage_graph()
+        entity_metadata = cg.get_entity_metadata()
+
+        d3_data = convert_to_d3_format(usage_graph, entity_metadata)
+
+        # Should have nodes with entityType: "method"
+        method_nodes = [
+            n for n in d3_data["nodes"]
+            if n.get("entityType") == "method"
+        ]
+        assert len(method_nodes) > 0
+
+        method_labels = [n.get("label") for n in method_nodes]
+        assert "Game.play_round" in method_labels

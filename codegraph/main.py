@@ -40,7 +40,19 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
     type=click.Path(),
     help="Export graph data to CSV file (specify output path)",
 )
-def cli(paths, object_only, file_path, distance, matplotlib, output, csv):
+@click.option(
+    "--focus",
+    type=str,
+    default=None,
+    help="Focus on a class for method-level analysis (e.g., engine.py:Game)",
+)
+@click.option(
+    "--exclude",
+    type=str,
+    default=None,
+    help="Comma-separated entity names to exclude (e.g., logger,print)",
+)
+def cli(paths, object_only, file_path, distance, matplotlib, output, csv, focus, exclude):
     """
     Tool that creates a graph of code to show dependencies between code entities (methods, classes, etc.).
     CodeGraph does not execute code, it is based only on lex and syntax parsing.
@@ -62,6 +74,8 @@ def cli(paths, object_only, file_path, distance, matplotlib, output, csv):
         matplotlib=matplotlib,
         output=output,
         csv=csv,
+        focus=focus,
+        exclude=exclude,
     )
     main(args)
 

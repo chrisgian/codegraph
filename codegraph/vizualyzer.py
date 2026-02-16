@@ -168,6 +168,10 @@ def convert_to_d3_format(modules_entities: Dict, entity_metadata: Dict = None) -
             entity_id = f"{module_name}:{entity_name}"
             entity_to_module[entity_name] = module_name
             entity_to_module[f"{module_name.replace('.py', '')}.{entity_name}"] = module_name
+            # Also register the entity_name itself if it's a dotted name (e.g., Game.play_round)
+            # so it can be resolved directly without module prefix
+            if "." in entity_name:
+                entity_to_module[entity_name] = module_name
 
             # Get entity metadata
             ent_meta = module_metadata.get(entity_name, {})
@@ -206,14 +210,25 @@ def convert_to_d3_format(modules_entities: Dict, entity_metadata: Dict = None) -
                 dep_entity = dep
 
                 if "." in dep:
-                    parts = dep.split(".")
-                    dep_module_name = parts[0]
-                    dep_entity = parts[1] if len(parts) > 1 else parts[0]
-                    # Find the actual module from mapping
-                    if dep in entity_to_module:
-                        dep_module = entity_to_module[dep]
-                    elif f"{dep_module_name}.py" in node_ids:
-                        dep_module = f"{dep_module_name}.py"
+                    # First check if the full dotted name exists as an entity key
+                    # (handles method-level names like Game.play_round)
+                    full_name_resolved = False
+                    for m_path, m_entities in modules_entities.items():
+                        if dep in m_entities:
+                            dep_module = os.path.basename(m_path)
+                            dep_entity = dep
+                            full_name_resolved = True
+                            break
+
+                    if not full_name_resolved:
+                        parts = dep.split(".")
+                        dep_module_name = parts[0]
+                        dep_entity = parts[1] if len(parts) > 1 else parts[0]
+                        # Find the actual module from mapping
+                        if dep in entity_to_module:
+                            dep_module = entity_to_module[dep]
+                        elif f"{dep_module_name}.py" in node_ids:
+                            dep_module = f"{dep_module_name}.py"
 
                 # Special case: module._ means importing from a module (re-export)
                 # This creates a module-to-module link

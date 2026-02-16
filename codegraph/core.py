@@ -1,15 +1,35 @@
 import logging
 import os
+import re
 from argparse import Namespace
 from collections import defaultdict, deque
-from typing import Dict, List, Set, Text, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Set, Text, Tuple
 
-from codegraph.parser import Import, create_objects_array
+from codegraph.parser import Class, Function, AsyncFunction, Import, create_objects_array
 from codegraph.utils import get_python_paths_list
 
 logger = logging.getLogger(__name__)
 
 aliases = {}
+
+
+@dataclass
+class FocusConfig:
+    focus_file: Optional[str] = None     # e.g., "engine.py"
+    focus_class: Optional[str] = None    # e.g., "Game"
+    exclude_names: Set[str] = field(default_factory=set)
+
+    @classmethod
+    def from_args(cls, focus, exclude):
+        config = cls()
+        if focus:
+            parts = focus.split(":")
+            config.focus_file = parts[0]
+            config.focus_class = parts[1] if len(parts) > 1 else None
+        if exclude:
+            config.exclude_names = {n.strip() for n in exclude.split(",")}
+        return config
 
 
 def read_file_content(path: Text) -> Text:
@@ -42,6 +62,10 @@ class CodeGraph:
         self.paths_list = get_python_paths_list(args.paths)
         # get py modules list data
         self.modules_data = get_code_objects(self.paths_list)
+        self.focus_config = FocusConfig.from_args(
+            getattr(args, 'focus', None),
+            getattr(args, 'exclude', None),
+        )
 
     def get_lines_numbers(self):
         """
@@ -65,11 +89,10 @@ class CodeGraph:
         Return metadata for all entities including line counts and types.
         :return: {module_path: {entity_name: {'lines': int, 'type': 'function'|'class'}}}
         """
-        from codegraph.parser import Class, Function, AsyncFunction, Import
-
         data = {}
         for module_path in self.modules_data:
             data[module_path] = {}
+            module_name = os.path.basename(module_path)
             for entity in self.modules_data[module_path]:
                 if isinstance(entity, Import):
                     continue
@@ -89,6 +112,25 @@ class CodeGraph:
                     "lineno": entity.lineno,
                     "endno": entity.endno
                 }
+
+                # For focused class, also emit method-level metadata
+                if (isinstance(entity, Class)
+                        and self.focus_config.focus_class == entity.name
+                        and (not self.focus_config.focus_file
+                             or self.focus_config.focus_file == module_name)):
+                    all_methods = {}
+                    all_methods.update(entity.methods)
+                    all_methods.update(entity.async_methods)
+                    for method_name, method_obj in all_methods.items():
+                        m_lines = 0
+                        if method_obj.lineno and method_obj.endno:
+                            m_lines = method_obj.endno - method_obj.lineno + 1
+                        data[module_path][f"{entity.name}.{method_name}"] = {
+                            "lines": m_lines,
+                            "entity_type": "method",
+                            "lineno": method_obj.lineno,
+                            "endno": method_obj.endno
+                        }
         return data
 
     def usage_graph(self) -> Dict:
@@ -99,9 +141,22 @@ class CodeGraph:
         entities_lines, imports, modules_names_map = get_imports_and_entities_lines(
             self.modules_data
         )
+        # Expand focused class into per-method entries
+        expand_entities_lines_for_focus(
+            entities_lines, self.modules_data, self.focus_config
+        )
         entities_usage_in_modules = collect_entities_usage_in_modules(
             self.modules_data, imports, modules_names_map
         )
+        # Detect self.method() calls within focused class
+        self_calls = detect_self_method_calls(
+            self.modules_data, self.focus_config
+        )
+        for path in self_calls:
+            if path not in entities_usage_in_modules:
+                entities_usage_in_modules[path] = defaultdict(list)
+            for entity_name, lines in self_calls[path].items():
+                entities_usage_in_modules[path][entity_name].extend(lines)
         # create edges
         dependencies = defaultdict(dict)
         for module in entities_usage_in_modules:
@@ -118,7 +173,13 @@ class CodeGraph:
                     else:
                         # mean in global of module
                         dependencies[module]["_"].append(method_that_used)
-        dependencies = populate_free_nodes(self.modules_data, dependencies, imports, modules_names_map)
+        dependencies = populate_free_nodes(
+            self.modules_data, dependencies, imports, modules_names_map,
+            self.focus_config
+        )
+        # Apply exclusions
+        if self.focus_config.exclude_names:
+            dependencies = apply_exclusions(dependencies, self.focus_config.exclude_names)
         return dependencies
 
     def get_dependencies(self, file_path: str, distance: int) -> Dict[str, Set[str]]:
@@ -156,6 +217,96 @@ class CodeGraph:
                                 queue.append((dependent_file, current_distance + 1))
 
         return dependencies
+
+
+def expand_entities_lines_for_focus(
+    entities_lines: Dict, code_objects: Dict, focus_config: FocusConfig
+) -> None:
+    """For the focused class, replace the single class-level entry with per-method entries."""
+    if not focus_config.focus_class:
+        return
+    for path in code_objects:
+        module_name = os.path.basename(path)
+        if focus_config.focus_file and focus_config.focus_file != module_name:
+            continue
+        for entity in code_objects[path]:
+            if isinstance(entity, Class) and entity.name == focus_config.focus_class:
+                # Remove the class-level entry
+                class_key = None
+                for key in list(entities_lines[path].keys()):
+                    if entities_lines[path][key] == entity.name:
+                        class_key = key
+                        break
+                if class_key:
+                    del entities_lines[path][class_key]
+                # Add per-method entries
+                all_methods = {}
+                all_methods.update(entity.methods)
+                all_methods.update(entity.async_methods)
+                for method_name, method_obj in all_methods.items():
+                    if method_obj.lineno and method_obj.endno:
+                        entities_lines[path][
+                            (method_obj.lineno, method_obj.endno)
+                        ] = f"{entity.name}.{method_name}"
+
+
+def detect_self_method_calls(
+    code_objects: Dict, focus_config: FocusConfig
+) -> Dict:
+    """Scan focused class for self.method() and ClassName.method() patterns."""
+    result = defaultdict(lambda: defaultdict(list))
+    if not focus_config.focus_class:
+        return result
+    self_pattern = re.compile(r'self\.(\w+)\s*\(')
+    for path in code_objects:
+        module_name = os.path.basename(path)
+        if focus_config.focus_file and focus_config.focus_file != module_name:
+            continue
+        for entity in code_objects[path]:
+            if isinstance(entity, Class) and entity.name == focus_config.focus_class:
+                all_method_names = set(entity.methods.keys()) | set(entity.async_methods.keys())
+                source = read_file_content(path)
+                lines = source.split("\n")
+                class_start = entity.lineno
+                class_end = entity.endno or len(lines)
+                for line_idx in range(class_start - 1, min(class_end, len(lines))):
+                    line = lines[line_idx]
+                    # Detect self.method()
+                    for match in self_pattern.finditer(line):
+                        method_name = match.group(1)
+                        if method_name in all_method_names:
+                            qualified = f"{entity.name}.{method_name}"
+                            result[path][qualified].append(line_idx + 1)
+                    # Detect ClassName.method() for static/classmethod calls
+                    static_pattern = re.compile(
+                        rf'{re.escape(entity.name)}\.(\w+)\s*\('
+                    )
+                    for match in static_pattern.finditer(line):
+                        method_name = match.group(1)
+                        if method_name in all_method_names:
+                            qualified = f"{entity.name}.{method_name}"
+                            result[path][qualified].append(line_idx + 1)
+    return result
+
+
+def apply_exclusions(dependencies: Dict, exclude_names: Set[str]) -> Dict:
+    """Remove excluded entities from the dependency graph."""
+    filtered = defaultdict(dict)
+    for module, entities in dependencies.items():
+        filtered[module] = defaultdict(list)
+        for entity_name, deps in entities.items():
+            # Check if entity itself should be excluded
+            base_name = entity_name.split(".")[-1] if "." in entity_name else entity_name
+            if base_name in exclude_names:
+                continue
+            # Filter deps
+            filtered_deps = []
+            for dep in deps:
+                dep_base = dep.split(".")[-1] if "." in dep else dep
+                if dep_base not in exclude_names:
+                    filtered_deps.append(dep)
+            filtered[module][entity_name] = filtered_deps
+    return filtered
 
 
 def get_module_name(code_path: Text) -> Text:
@@ -301,10 +452,13 @@ def collect_entities_usage_in_modules(
     return entities_usage_in_modules
 
 
-def populate_free_nodes(code_objects: Dict, dependencies: Dict, imports: Dict, modules_names_map: Dict) -> Dict:
-    from codegraph.parser import Class
+def populate_free_nodes(code_objects: Dict, dependencies: Dict, imports: Dict,
+                        modules_names_map: Dict, focus_config: FocusConfig = None) -> Dict:
+    if focus_config is None:
+        focus_config = FocusConfig()
 
     for path in code_objects:
+        module_name = os.path.basename(path)
         # Create module-to-module connections based on imports
         # This ensures we show connections even when specific entities aren't detected
         # (e.g., when importing variables or when entity usage detection misses something)
@@ -319,6 +473,19 @@ def populate_free_nodes(code_objects: Dict, dependencies: Dict, imports: Dict, m
         for entity in code_objects[path]:
             if entity.name not in dependencies[path]:
                 dependencies[path][entity.name] = []
+
+            # For focused class, also add free nodes for methods
+            if (isinstance(entity, Class)
+                    and focus_config.focus_class == entity.name
+                    and (not focus_config.focus_file
+                         or focus_config.focus_file == module_name)):
+                all_methods = {}
+                all_methods.update(entity.methods)
+                all_methods.update(entity.async_methods)
+                for method_name in all_methods:
+                    qualified = f"{entity.name}.{method_name}"
+                    if qualified not in dependencies[path]:
+                        dependencies[path][qualified] = []
 
             # Add inheritance connections for classes
             if isinstance(entity, Class) and entity.super:
